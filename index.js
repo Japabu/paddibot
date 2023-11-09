@@ -1,8 +1,8 @@
 import 'dotenv/config';
 
-import { Client, Events, GatewayIntentBits, REST, Routes, SlashCommandBuilder } from 'discord.js';
 import { VoiceConnectionStatus, createAudioPlayer, createAudioResource, demuxProbe, joinVoiceChannel } from '@discordjs/voice';
-import { ytAudioStream } from './yt.js';
+import { Client, Events, GatewayIntentBits, REST, Routes, SlashCommandBuilder } from 'discord.js';
+import ytdl from 'ytdl-core';
 
 process.on('unhandledRejection', error => {
 	console.error('Unhandled promise rejection:', error);
@@ -52,6 +52,10 @@ player.on('error', error => {
 async function probeAndCreateResource(readableStream) {
 	const { stream, type } = await demuxProbe(readableStream);
 	return createAudioResource(stream, { inputType: type });
+}
+
+function ytAudioStream(url) {
+	return ytdl(url, { filter: 'audioonly', quality: 'highestaudio', highWaterMark: 1 << 25 });
 }
 
 
