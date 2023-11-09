@@ -1,6 +1,6 @@
 import 'dotenv/config';
 
-import { VoiceConnectionStatus, createAudioPlayer, createAudioResource, demuxProbe, joinVoiceChannel } from '@discordjs/voice';
+import { AudioPlayerStatus, NoSubscriberBehavior, VoiceConnectionStatus, createAudioPlayer, createAudioResource, demuxProbe, joinVoiceChannel } from '@discordjs/voice';
 import { Client, Events, GatewayIntentBits, REST, Routes, SlashCommandBuilder } from 'discord.js';
 import ytdl from 'ytdl-core';
 
@@ -20,10 +20,18 @@ const commands = [
 			.setDescription("URL")
 			.setRequired(true)
 		),
+	new SlashCommandBuilder()
+		.setName('loop')
+		.setDescription('Loops a vid')
+		.addStringOption(option => option
+			.setName("url")
+			.setDescription("URL")
+			.setRequired(true)
+		),
 ];
 
 const rest = new REST().setToken(process.env.TOKEN);
-rest.put(Routes.applicationCommands(process.env.CLIENT_ID), { body: commands });
+await rest.put(Routes.applicationCommands(process.env.CLIENT_ID), { body: commands });
 
 const client = new Client({ intents: [GatewayIntentBits.Guilds | GatewayIntentBits.GuildVoiceStates] });
 
@@ -43,10 +51,18 @@ client.on(Events.ClientReady, () => {
 
 
 
-const player = createAudioPlayer();
+const player = createAudioPlayer({ behaviors: { noSubscriber: NoSubscriberBehavior.Pause } });
 
 player.on('error', error => {
 	console.error('AudioPlayerError:', error);
+});
+
+let loopUrl = null;
+player.on('stateChange', (_, state) => {
+	console.log("stateChange: " + state.status);
+	if (state.status === AudioPlayerStatus.Idle && loopUrl) {
+		playYt(loopUrl);
+	}
 });
 
 async function probeAndCreateResource(readableStream) {
@@ -59,12 +75,18 @@ function ytAudioStream(url) {
 }
 
 
+async function playYt(url) {
+	const yt = ytAudioStream(url);
+	const res = await probeAndCreateResource(yt);
+	player.play(res);
+}
+
 client.on(Events.InteractionCreate, async interaction => {
 	if (!interaction.isChatInputCommand()) return;
 
 	if (interaction.commandName === "ping") {
 		await interaction.reply("Pong!");
-	} else if (interaction.commandName === "play") {
+	} else if (interaction.commandName === "play" || interaction.commandName === "loop") {
 		const url = interaction.options.getString("url");
 		console.log(url);
 
@@ -78,12 +100,16 @@ client.on(Events.InteractionCreate, async interaction => {
 			console.log('The connection has entered the Ready state - ready to play audio!');
 		});
 
-		const yt = ytAudioStream(url);
-		const res = await probeAndCreateResource(yt);
 		connection.subscribe(player);
-		player.play(res);
-
-		await interaction.reply("Playing: " + url);
+		if (interaction.commandName === "play") {
+			loopUrl = null;
+			await playYt(url);
+			await interaction.reply("Playing: " + url);
+		} else {
+			loopUrl = url;
+			await playYt(url);
+			await interaction.reply("Looping: " + url);
+		}
 	}
 });
 
