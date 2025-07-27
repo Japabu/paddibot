@@ -87,28 +87,37 @@ client.on(Events.InteractionCreate, async interaction => {
 	if (interaction.commandName === "ping") {
 		await interaction.reply("Pong!");
 	} else if (interaction.commandName === "play" || interaction.commandName === "loop") {
+		// Acknowledge the interaction immediately to prevent timeout
+		await interaction.deferReply();
+		
 		const url = interaction.options.getString("url");
 		console.log(url);
 
-		const connection = joinVoiceChannel({
-			channelId: interaction.member.voice.channel.id,
-			guildId: interaction.guild.id,
-			adapterCreator: interaction.guild.voiceAdapterCreator,
-		});
+		try {
+			const connection = joinVoiceChannel({
+				channelId: interaction.member.voice.channel.id,
+				guildId: interaction.guild.id,
+				adapterCreator: interaction.guild.voiceAdapterCreator,
+			});
 
-		connection.on(VoiceConnectionStatus.Ready, () => {
-			console.log('The connection has entered the Ready state - ready to play audio!');
-		});
+			connection.on(VoiceConnectionStatus.Ready, () => {
+				console.log('The connection has entered the Ready state - ready to play audio!');
+			});
 
-		connection.subscribe(player);
-		if (interaction.commandName === "play") {
-			loopUrl = null;
-			await playYt(url);
-			await interaction.reply("Playing: " + url);
-		} else {
-			loopUrl = url;
-			await playYt(url);
-			await interaction.reply("Looping: " + url);
+			connection.subscribe(player);
+			
+			if (interaction.commandName === "play") {
+				loopUrl = null;
+				await playYt(url);
+				await interaction.editReply("Playing: " + url);
+			} else {
+				loopUrl = url;
+				await playYt(url);
+				await interaction.editReply("Looping: " + url);
+			}
+		} catch (error) {
+			console.error('Error processing command:', error);
+			await interaction.editReply("An error occurred while processing your request.");
 		}
 	}
 });
