@@ -73,6 +73,7 @@ let controlMessage = null;
 let playlistTitle = "";
 let lastAction = "";
 let lastActionUser = "";
+let voiceConnection = null;
 
 player.on('stateChange', (_, state) => {
 	console.log("stateChange: " + state.status);
@@ -94,29 +95,34 @@ function shuffleArray(array) {
 	return shuffled;
 }
 
-function createControlButtons() {
+function createControlButtons(disabled = false) {
 	return new ActionRowBuilder()
 		.addComponents(
 			new ButtonBuilder()
 				.setCustomId('skip')
 				.setLabel('⏭️ Skip')
-				.setStyle(ButtonStyle.Primary),
+				.setStyle(ButtonStyle.Primary)
+				.setDisabled(disabled),
 			new ButtonBuilder()
 				.setCustomId('pause')
 				.setLabel('⏸️ Pause')
-				.setStyle(ButtonStyle.Secondary),
+				.setStyle(ButtonStyle.Secondary)
+				.setDisabled(disabled),
 			new ButtonBuilder()
 				.setCustomId('resume')
 				.setLabel('▶️ Resume')
-				.setStyle(ButtonStyle.Success),
+				.setStyle(ButtonStyle.Success)
+				.setDisabled(disabled),
 			new ButtonBuilder()
 				.setCustomId('stop')
 				.setLabel('⏹️ Stop')
-				.setStyle(ButtonStyle.Danger),
+				.setStyle(ButtonStyle.Danger)
+				.setDisabled(disabled),
 			new ButtonBuilder()
 				.setCustomId('shuffle')
 				.setLabel('🔀 Shuffle')
 				.setStyle(ButtonStyle.Secondary)
+				.setDisabled(disabled)
 		);
 }
 
@@ -256,7 +262,24 @@ client.on(Events.InteractionCreate, async interaction => {
 				currentPlaylist = [];
 				currentPlaylistIndex = 0;
 				loopUrl = null;
-				await updateControlMessage('⏹️ **Playback stopped**');
+
+				// Disconnect from voice channel
+				if (voiceConnection) {
+					voiceConnection.destroy();
+					voiceConnection = null;
+				}
+
+				// Update control message with disabled buttons
+				if (controlMessage) {
+					try {
+						await controlMessage.edit({
+							content: '⏹️ **Playback stopped and disconnected from voice channel**',
+							components: [createControlButtons(true)] // Disable all buttons
+						});
+					} catch (error) {
+						console.error('Failed to update control message on stop:', error);
+					}
+				}
 				break;
 
 			case 'shuffle':
@@ -289,17 +312,17 @@ client.on(Events.InteractionCreate, async interaction => {
 		console.log(url);
 
 		try {
-			const connection = joinVoiceChannel({
+			voiceConnection = joinVoiceChannel({
 				channelId: interaction.member.voice.channel.id,
 				guildId: interaction.guild.id,
 				adapterCreator: interaction.guild.voiceAdapterCreator,
 			});
 
-			connection.on(VoiceConnectionStatus.Ready, () => {
+			voiceConnection.on(VoiceConnectionStatus.Ready, () => {
 				console.log('The connection has entered the Ready state - ready to play audio!');
 			});
 
-			connection.subscribe(player);
+			voiceConnection.subscribe(player);
 
 			if (interaction.commandName === "play") {
 				loopUrl = null;
