@@ -74,9 +74,21 @@ let playlistTitle = "";
 let lastAction = "";
 let lastActionUser = "";
 let voiceConnection = null;
+let idleTimer = null;
+
+const IDLE_TIMEOUT_MS = (Number(process.env.IDLE_TIMEOUT_MINUTES) || 5) * 60 * 1000;
 
 player.on('stateChange', (_, state) => {
 	console.log("stateChange: " + state.status);
+
+	// Disconnect after being idle/paused for too long
+	if (state.status === AudioPlayerStatus.Playing) {
+		clearTimeout(idleTimer);
+		idleTimer = null;
+	} else {
+		startIdleTimer();
+	}
+
 	if (state.status === AudioPlayerStatus.Idle) {
 		if (loopUrl) {
 			playYt(loopUrl);
@@ -140,6 +152,44 @@ async function updateControlMessage(content) {
 			});
 		} catch (error) {
 			console.error('Failed to update control message:', error);
+		}
+	}
+}
+
+function startIdleTimer() {
+	if (idleTimer || !voiceConnection) return;
+	idleTimer = setTimeout(() => {
+		idleTimer = null;
+		console.log('Idle timeout reached, disconnecting');
+		disconnect('💤 **Disconnected due to inactivity**');
+	}, IDLE_TIMEOUT_MS);
+}
+
+async function disconnect(message) {
+	clearTimeout(idleTimer);
+	idleTimer = null;
+
+	currentPlaylist = [];
+	currentPlaylistIndex = 0;
+	loopUrl = null;
+
+	if (voiceConnection) {
+		voiceConnection.destroy();
+		voiceConnection = null;
+	}
+
+	// Stop after clearing the connection so the idle timer isn't restarted
+	player.stop();
+
+	// Update control message with disabled buttons
+	if (controlMessage) {
+		try {
+			await controlMessage.edit({
+				content: message,
+				components: [createControlButtons(true)] // Disable all buttons
+			});
+		} catch (error) {
+			console.error('Failed to update control message on disconnect:', error);
 		}
 	}
 }
@@ -315,28 +365,7 @@ client.on(Events.InteractionCreate, async interaction => {
 
 			case 'stop':
 				lastAction = "⏹️ Stopped playback";
-				player.stop();
-				currentPlaylist = [];
-				currentPlaylistIndex = 0;
-				loopUrl = null;
-
-				// Disconnect from voice channel
-				if (voiceConnection) {
-					voiceConnection.destroy();
-					voiceConnection = null;
-				}
-
-				// Update control message with disabled buttons
-				if (controlMessage) {
-					try {
-						await controlMessage.edit({
-							content: '⏹️ **Playback stopped and disconnected from voice channel**',
-							components: [createControlButtons(true)] // Disable all buttons
-						});
-					} catch (error) {
-						console.error('Failed to update control message on stop:', error);
-					}
-				}
+				await disconnect('⏹️ **Playback stopped and disconnected from voice channel**');
 				break;
 
 			case 'shuffle':
@@ -385,6 +414,11 @@ client.on(Events.InteractionCreate, async interaction => {
 			});
 
 			voiceConnection.subscribe(player);
+
+			// Covers the case where nothing ever starts playing (e.g. the first video fails)
+			if (player.state.status !== AudioPlayerStatus.Playing) {
+				startIdleTimer();
+			}
 
 			if (interaction.commandName === "play") {
 				loopUrl = null;
