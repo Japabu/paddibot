@@ -2,8 +2,8 @@ import 'dotenv/config';
 
 import { AudioPlayerStatus, NoSubscriberBehavior, VoiceConnectionStatus, createAudioPlayer, createAudioResource, demuxProbe, joinVoiceChannel } from '@discordjs/voice';
 import { ActionRowBuilder, ButtonBuilder, ButtonStyle, Client, Events, GatewayIntentBits, REST, Routes, SlashCommandBuilder } from 'discord.js';
-import ytdl from 'ytdl-core';
-import ytpl from '@distube/ytpl';
+import { execFile, spawn } from 'node:child_process';
+import { promisify } from 'node:util';
 
 process.on('unhandledRejection', error => {
 	console.error('Unhandled promise rejection:', error);
@@ -184,23 +184,63 @@ async function probeAndCreateResource(readableStream) {
 	return createAudioResource(stream, { inputType: type });
 }
 
+// YouTube extraction is delegated to yt-dlp, which keeps up with YouTube's changes.
+// Node is used as the JS runtime for solving YouTube's player challenges.
+const YT_DLP = process.env.YT_DLP_PATH || 'yt-dlp';
+const YT_DLP_BASE_ARGS = ['--js-runtimes', 'node', '--no-warnings', '--quiet'];
+const execFileAsync = promisify(execFile);
+
+// Resolves with the audio stream once yt-dlp produced the first bytes, rejects if it exits without output.
 function ytAudioStream(url) {
-	return ytdl(url, { filter: 'audioonly', quality: 'highestaudio', highWaterMark: 1 << 25 });
+	return new Promise((resolve, reject) => {
+		const proc = spawn(YT_DLP, [...YT_DLP_BASE_ARGS, '--no-playlist', '-f', 'bestaudio[acodec=opus]/bestaudio', '-o', '-', url], { stdio: ['ignore', 'pipe', 'pipe'] });
+		let stderr = '';
+		let started = false;
+		proc.stderr.on('data', chunk => { stderr += chunk; });
+		proc.stdout.on('error', () => {}); // EPIPE when playback is stopped early
+		const onReadable = () => {
+			if (proc.stdout.readableLength === 0) return; // 'readable' also fires at end of stream
+			started = true;
+			proc.stdout.off('readable', onReadable);
+			resolve(proc.stdout);
+		};
+		proc.stdout.on('readable', onReadable);
+		proc.stdout.once('close', () => proc.kill());
+		proc.on('error', reject);
+		proc.on('close', code => {
+			if (started) return;
+			proc.stdout.off('readable', onReadable);
+			reject(new Error(`yt-dlp exited with code ${code}: ${stderr.trim()}`));
+		});
+	});
 }
 
+async function fetchPlaylist(url) {
+	const { stdout } = await execFileAsync(YT_DLP, [...YT_DLP_BASE_ARGS, '--flat-playlist', '--yes-playlist', '-J', url], { maxBuffer: 1 << 28 });
+	const info = JSON.parse(stdout);
+	return {
+		title: info.title,
+		items: (info.entries ?? []).map(entry => ({
+			id: entry.id,
+			title: entry.title,
+			url: entry.url ?? `https://www.youtube.com/watch?v=${entry.id}`,
+			isLive: entry.live_status === 'is_live',
+		})),
+	};
+}
 
 async function playYt(url, retryCount = 0) {
 	const maxRetries = 2;
 
 	try {
-		const yt = ytAudioStream(url);
+		const yt = await ytAudioStream(url);
 		const res = await probeAndCreateResource(yt);
 		player.play(res);
 		return true; // Success
 	} catch (error) {
 		console.error(`Error playing ${url}:`, error.message);
 
-		if (error.statusCode === 403 && retryCount < maxRetries) {
+		if (retryCount < maxRetries) {
 			console.log(`Retrying video in ${(retryCount + 1) * 2} seconds...`);
 			await new Promise(resolve => setTimeout(resolve, (retryCount + 1) * 2000));
 			return await playYt(url, retryCount + 1);
@@ -370,38 +410,12 @@ client.on(Events.InteractionCreate, async interaction => {
 
 					console.log(`Attempting to load playlist: ${url}`);
 
-					// Retry logic for 403 errors
-					let playlist;
-					let retryCount = 0;
-					const maxRetries = 3;
-
-					while (retryCount < maxRetries) {
-						try {
-							playlist = await ytpl(url, {
-								limit: Infinity,
-								requestOptions: {
-									headers: {
-										'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-									}
-								}
-							});
-							break; // Success, exit retry loop
-						} catch (error) {
-							retryCount++;
-							if (error.statusCode === 403 && retryCount < maxRetries) {
-								console.log(`403 error, retrying in ${retryCount * 2} seconds... (${retryCount}/${maxRetries})`);
-								await interaction.editReply(`Loading playlist... (retry ${retryCount}/${maxRetries})`);
-								await new Promise(resolve => setTimeout(resolve, retryCount * 2000)); // Wait 2, 4, 6 seconds
-							} else {
-								throw error; // Re-throw if not 403 or max retries reached
-							}
-						}
-					}
+					const playlist = await fetchPlaylist(url);
 
 					console.log(`Loaded playlist: ${playlist.title} with ${playlist.items.length} items`);
 
 					// Filter out unavailable videos and live streams
-					const videos = playlist.items.filter(item => item.id && item.url && !item.isLive);
+					const videos = playlist.items.filter(item => item.id && item.url && !item.isLive && !/^\[(Private|Deleted) video\]$/.test(item.title));
 					console.log(`Filtered to ${videos.length} playable videos`);
 
 					if (videos.length === 0) {
@@ -429,9 +443,7 @@ client.on(Events.InteractionCreate, async interaction => {
 					console.error('Error loading playlist:', playlistError);
 
 					let errorMessage = "Error loading playlist. ";
-					if (playlistError.statusCode === 403) {
-						errorMessage += "YouTube is temporarily blocking requests. Please try again in a few minutes.";
-					} else if (playlistError.message.includes('private') || playlistError.message.includes('unavailable')) {
+					if (playlistError.message.includes('private') || playlistError.message.includes('unavailable')) {
 						errorMessage += "This playlist might be private or unavailable.";
 					} else {
 						errorMessage += "Make sure the URL is a valid YouTube playlist.";

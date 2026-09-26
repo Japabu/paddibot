@@ -9,13 +9,11 @@
   "author": "",
   "license": "ISC",
   "dependencies": {
-    "@discordjs/voice": "^0.18.0",
-    "@distube/ytpl": "^1.2.3",
-    "discord.js": "^14.21.0",
+    "@discordjs/voice": "^0.19.2",
+    "discord.js": "^14.27.0",
     "dotenv": "^17.0.1",
     "ffmpeg-static": "^5.2.0",
-    "libsodium-wrappers": "^0.7.15",
-    "ytdl-core": "npm:@distube/ytdl-core@^4.16.12"
+    "libsodium-wrappers": "^0.7.15"
   },
   "type": "module"
 }
