@@ -1,0 +1,70 @@
+# Builds the image on every PR (as a check) and on main pushes it to ghcr.io and
+# pins the new tag in Japabu/pi-compose, which the Pi applies within a minute.
+name: Build & deploy
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  IMAGE: ghcr.io/japabu/${{ github.event.repository.name }}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - id: tag
+        run: echo "tag=sha-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+      - if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/arm/v7
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: |
+            ${{ env.IMAGE }}:${{ steps.tag.outputs.tag }}
+            ${{ env.IMAGE }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  deploy:
+    needs: build
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    concurrency: deploy
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: Japabu/pi-compose
+          ssh-key: ${{ secrets.PI_COMPOSE_DEPLOY_KEY }}
+      - name: Pin new image tag in pi-compose
+        env:
+          TAG: ${{ needs.build.outputs.tag }}
+          MSG: ${{ github.event.head_commit.message }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          for attempt in 1 2 3 4 5; do
+            git pull --quiet --rebase origin main
+            sed -i -E "s#(image: ${IMAGE}):[^[:space:]]+#\1:${TAG}#" compose.yaml
+            git diff --quiet && { echo "Already at $TAG"; exit 0; }
+            git commit -qam "${{ github.event.repository.name }}: $TAG" -m "${MSG%%$'\n'*}" -m "${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }}"
+            git push --quiet origin HEAD:main && exit 0
+            git reset --quiet --hard origin/main; sleep $((attempt * 3))
+          done
+          exit 1
