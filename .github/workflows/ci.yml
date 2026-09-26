@@ -11,6 +11,8 @@ on:
 env:
   IMAGE: ghcr.io/japabu/${{ github.event.repository.name }}
 
+permissions: {}
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -46,6 +48,7 @@ jobs:
     needs: build
     if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
+    environment: production  # holds PI_COMPOSE_DEPLOY_KEY; only usable from main
     concurrency: deploy
     steps:
       - uses: actions/checkout@v7
