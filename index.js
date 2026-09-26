@@ -190,10 +190,24 @@ const YT_DLP = process.env.YT_DLP_PATH || 'yt-dlp';
 const YT_DLP_BASE_ARGS = ['--js-runtimes', 'node', '--no-warnings', '--quiet'];
 const execFileAsync = promisify(execFile);
 
+// Only YouTube links reach yt-dlp: it would otherwise fetch any site (including hosts on the Pi's LAN).
+const YT_HOSTS = new Set(['youtube.com', 'www.youtube.com', 'm.youtube.com', 'music.youtube.com', 'youtu.be']);
+
+function isYouTubeUrl(input) {
+	try {
+		const { protocol, hostname } = new URL(input);
+		return (protocol === 'https:' || protocol === 'http:') && YT_HOSTS.has(hostname);
+	} catch {
+		return false;
+	}
+}
+
 // Resolves with the audio stream once yt-dlp produced the first bytes, rejects if it exits without output.
 function ytAudioStream(url) {
 	return new Promise((resolve, reject) => {
-		const proc = spawn(YT_DLP, [...YT_DLP_BASE_ARGS, '--no-playlist', '-f', 'bestaudio[acodec=opus]/bestaudio', '-o', '-', url], { stdio: ['ignore', 'pipe', 'pipe'] });
+		if (!isYouTubeUrl(url)) return reject(new Error('Only YouTube links are supported'));
+		// '--' ends option parsing so the URL can never be read as a yt-dlp flag
+		const proc = spawn(YT_DLP, [...YT_DLP_BASE_ARGS, '--no-playlist', '-f', 'bestaudio[acodec=opus]/bestaudio', '-o', '-', '--', url], { stdio: ['ignore', 'pipe', 'pipe'] });
 		let stderr = '';
 		let started = false;
 		proc.stderr.on('data', chunk => { stderr += chunk; });
@@ -216,7 +230,8 @@ function ytAudioStream(url) {
 }
 
 async function fetchPlaylist(url) {
-	const { stdout } = await execFileAsync(YT_DLP, [...YT_DLP_BASE_ARGS, '--flat-playlist', '--yes-playlist', '-J', url], { maxBuffer: 1 << 28 });
+	if (!isYouTubeUrl(url)) throw new Error('Only YouTube links are supported');
+	const { stdout } = await execFileAsync(YT_DLP, [...YT_DLP_BASE_ARGS, '--flat-playlist', '--yes-playlist', '-J', '--', url], { maxBuffer: 1 << 28 });
 	const info = JSON.parse(stdout);
 	return {
 		title: info.title,
@@ -240,7 +255,9 @@ async function playYt(url, retryCount = 0) {
 	} catch (error) {
 		console.error(`Error playing ${url}:`, error.message);
 
-		if (retryCount < maxRetries) {
+		// Retrying only helps with transient failures (throttling, network), not with gone or blocked videos
+		const permanent = /Only YouTube links|Video unavailable|Private video|Unsupported URL|This video has been removed|Sign in to confirm your age/i.test(error.message);
+		if (!permanent && retryCount < maxRetries) {
 			console.log(`Retrying video in ${(retryCount + 1) * 2} seconds...`);
 			await new Promise(resolve => setTimeout(resolve, (retryCount + 1) * 2000));
 			return await playYt(url, retryCount + 1);
@@ -350,6 +367,11 @@ client.on(Events.InteractionCreate, async interaction => {
 
 		const url = interaction.options.getString("url");
 		console.log(url);
+
+		if (!isYouTubeUrl(url)) {
+			await interaction.editReply("❌ Only YouTube links (youtube.com / youtu.be) are supported.");
+			return;
+		}
 
 		try {
 			voiceConnection = joinVoiceChannel({
