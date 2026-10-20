@@ -10,7 +10,7 @@ RUN apt-get update \
 WORKDIR /app
 COPY package*.json .
 RUN npm ci --omit=dev
-COPY index.js .
+COPY *.js .
 
 # YouTube breaks yt-dlp regularly, so update it on every start
 CMD ["sh", "-c", "yt-dlp -U || true; exec node index.js"]
