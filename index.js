@@ -16,11 +16,26 @@ const commands = [
 ];
 
 const rest = new REST().setToken(process.env.TOKEN);
-await rest.put(Routes.applicationCommands(process.env.CLIENT_ID), { body: commands });
+const configCommand = commands.find(command => command.name === 'config').toJSON();
+// Configuration belongs to a server. Guild registration also makes changes visible immediately.
+await rest.put(Routes.applicationCommands(process.env.CLIENT_ID), { body: commands.filter(command => command.name !== 'config') });
+
+async function registerServerConfig(guild) {
+	try {
+		await rest.post(Routes.applicationGuildCommands(process.env.CLIENT_ID, guild.id), { body: configCommand });
+		console.log(`Registered /config in ${guild.name}`);
+	} catch (error) {
+		console.error(`Could not register /config in ${guild.name}:`, error);
+	}
+}
 const client = new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildVoiceStates] });
 process.on('unhandledRejection', error => console.error('Unhandled promise rejection:', error));
 for (const event of [Events.ShardError, Events.Error, Events.Warn]) client.on(event, console.error);
-client.on(Events.ClientReady, () => console.log(`Logged in as ${client.user.tag}!`));
+client.on(Events.ClientReady, () => {
+	console.log(`Logged in as ${client.user.tag}!`);
+	for (const guild of client.guilds.cache.values()) void registerServerConfig(guild);
+});
+client.on(Events.GuildCreate, registerServerConfig);
 
 const player = createAudioPlayer({ behaviors: { noSubscriber: NoSubscriberBehavior.Pause } });
 let voiceConnection = null;
